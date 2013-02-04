@@ -1,0 +1,20 @@
+{
+  "name": "x-panel",
+  "description": "Dynamically grows according to inner content",
+  "version": "0.1.0",
+  "keywords": [
+    "web-components",
+    "panel",
+    "xhr",
+    "structural",
+    "element",
+    "x-tag"
+  ],
+  "scripts": [
+    "src/panel.js"
+  ],
+  "dependencies": {
+    "x-tag-core": "*",
+    "x-tag-mixin-request": "*"
+  }
+}
