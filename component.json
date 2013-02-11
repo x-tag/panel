@@ -1,6 +1,6 @@
 {
   "name": "x-panel",
-  "description": "Dynamically grows according to inner content",
+  "description": "A panel is a block element that has the ability to load data asynchronously when a src attribute is set (same-origin policy restricted).",
   "version": "0.1.0",
   "keywords": [
     "web-components",
