@@ -15,12 +15,14 @@ if (!(document.register || {}).__polyfill__){
         if (options.prototype && !('setAttribute' in options.prototype)) {
           throw new TypeError("Unexpected prototype for " + name + " element - custom element prototypes must inherit from the Element interface");
         }
-        var lifecycle = options.lifecycle || {},
+        var _prototype = options.prototype || Object.create((win.HTMLSpanElement || win.HTMLElement).prototype),
+            lifecycle = options.lifecycle || {},
             tag = tags[name] = {
               'constructor': function(){
                 return doc.createElement(name);
               },
-              'prototype': options.prototype || Object.create((win.HTMLSpanElement || win.HTMLElement).prototype),
+              _prototype: doc.__proto__ ? null : unwrapPrototype(_prototype),
+              'prototype': _prototype,
               'fragment': options.fragment || doc.createDocumentFragment(),
               'lifecycle': {
                 created: lifecycle.created || function(){},
@@ -35,6 +37,16 @@ if (!(document.register || {}).__polyfill__){
         });
         return tag.constructor;
       };
+    
+    function unwrapPrototype(proto){
+      var definition = {},
+          names = Object.getOwnPropertyNames(proto),
+          index = names.length;
+      if (index) while (index--) {
+        definition[names[index]] = Object.getOwnPropertyDescriptor(proto, names[index]);
+      }
+      return definition;
+    }
     
     function typeOf(obj) {
       return ({}).toString.call(obj).match(/\s([a-zA-Z]+)/)[1].toLowerCase();
@@ -102,7 +114,8 @@ if (!(document.register || {}).__polyfill__){
               return upgraded;
             });
           }
-          upgraded.__proto__ = tag.prototype;
+          if (doc.__proto__) upgraded.__proto__ = tag.prototype;
+          else Object.defineProperties(upgraded, tag._prototype);
           upgraded.constructor = tag.constructor;
           upgraded._elementupgraded = true;
           if (!mutation) delete upgraded._suppressObservers;
@@ -193,7 +206,7 @@ if (!(document.register || {}).__polyfill__){
         for (var z in diff) {
           var type = element._records[(z == 'added') ? 'inserted' : 'removed'],
             nodes = record[z + 'Nodes'], length = nodes.length;
-          for (i = 0; i < length && diff[z].indexOf(nodes[i]) == -1; i++){
+          for (var i = 0; i < length && diff[z].indexOf(nodes[i]) == -1; i++){
             diff[z].push(nodes[i]);
             type.forEach(function(fn){
               fn(nodes[i], record);
@@ -222,12 +235,12 @@ if (!(document.register || {}).__polyfill__){
       };
       
       var _setAttribute = Element.prototype.setAttribute;   
-      Element.prototype.setAttribute = function(attr, value){
+      Element.prototype.setAttribute = function(attr, value, skip){
         var tag = getTag(this),
             last = this.getAttribute(attr);
         _setAttribute.call(this, attr, value);
         if (tag && last != this.getAttribute(attr)) {
-          tag.lifecycle.attributeChanged.call(this, attr, value, last);
+          tag.lifecycle.attributeChanged.call(this, attr, value, last, skip);
         } 
       };
       
@@ -276,7 +289,7 @@ if (!(document.register || {}).__polyfill__){
     doc = document,
     keypseudo = {
       action: function (pseudo, event) {
-        return ~pseudo.value.match(/(\d+)/g).indexOf(String(event.keyCode)) == (pseudo.name == 'keypass');
+        return pseudo.value.match(/(\d+)/g).indexOf(String(event.keyCode)) > -1 == (pseudo.name == 'keypass');
       }
     },
     touchFilter = function (custom, event) {
@@ -288,8 +301,9 @@ if (!(document.register || {}).__polyfill__){
     createFlowEvent = function (type) {
       var flow = type == 'over';
       return {
-        base: 'OverflowEvent' in window ? 'overflowchanged' : type + 'flow',
+        base: 'OverflowEvent' in win ? 'overflowchanged' : type + 'flow',
         condition: function (custom, event) {
+          event.flow = type;
           return event.type == (type + 'flow') ||
           ((event.orient === 0 && event.horizontalOverflow == flow) ||
           (event.orient == 1 && event.verticalOverflow == flow) ||
@@ -354,7 +368,9 @@ if (!(document.register || {}).__polyfill__){
 /*** X-Tag Object Definition ***/
 
   var xtag = {
+    tags: {},
     defaultOptions: {
+      pseudos: [],
       mixins: [],
       events: {},
       methods: {},
@@ -364,53 +380,64 @@ if (!(document.register || {}).__polyfill__){
         xtag: {
           get: function(){
             return this.__xtag__ ? this.__xtag__ : (this.__xtag__ = { data: {} });
-          },
-          set: function(){
-            
           }
         }
       }
     },
     register: function (name, options) {
-      var tag = xtag.merge({}, xtag.defaultOptions, options);
-      tag = applyMixins(tag);
-      for (var z in tag.events) tag.events[z.split(':')[0]] = xtag.parseEvent(z, tag.events[z]);
-      for (z in tag.lifecycle) tag.lifecycle[z.split(':')[0]] = xtag.applyPseudos(z, tag.lifecycle[z]);
-      for (z in tag.methods) tag.prototype[z.split(':')[0]] = { value: xtag.applyPseudos(z, tag.methods[z]) };
+      var _name = name.toLowerCase();
+      var tag = xtag.tags[_name] = applyMixins(xtag.merge({}, xtag.defaultOptions, options));
+      xtag.attributeSetters[_name] = {};
+      
+      for (var z in tag.events) tag.events[z] = xtag.parseEvent(z, tag.events[z]);
+      for (var z in tag.lifecycle) tag.lifecycle[z.split(':')[0]] = xtag.applyPseudos(z, tag.lifecycle[z], tag.pseudos);
+      for (var z in tag.methods) tag.prototype[z.split(':')[0]] = { value: xtag.applyPseudos(z, tag.methods[z], tag.pseudos) };
       
       for (var prop in tag.accessors) {
         tag.prototype[prop] = {};
         var accessor = tag.accessors[prop];
-        for (z in accessor) {
+        for (var z in accessor) {
           var key = z.split(':'), type = key[0];
           if (type == 'get' || type == 'set') {
             key[0] = prop;
-            tag.prototype[prop][type] = xtag.applyPseudos(key.join(':'), accessor[z]);
+            tag.prototype[prop][type] = xtag.applyPseudos(key.join(':'), accessor[z], tag.pseudos);
           }
           else tag.prototype[prop][z] = accessor[z];
         }
       }
+  
+      var attributeChanged = tag.lifecycle.attributeChanged;
+      tag.lifecycle.attributeChanged = function (attr, value, last, skip) {
+        var setter = xtag.attributeSetters[_name][attr.toLowerCase()];
+        if (!skip && setter) this[setter] = value;
+        return attributeChanged ? attributeChanged.apply(this, xtag.toArray(arguments)) : null;
+      };
 
       var created = tag.lifecycle.created;
       tag.lifecycle.created = function () {
+        var element = this;
+        tag.pseudos.forEach(function(obj){
+          obj.onAdd.call(element, obj);
+        });
         xtag.addEvents(this, tag.events);
         tag.mixins.forEach(function(mixin){
-          if (xtag.mixins[mixin].events) xtag.addEvents(this, xtag.mixins[mixin].events);
-        },this);
+          if (xtag.mixins[mixin].events) xtag.addEvents(element, xtag.mixins[mixin].events);
+        });
         return created ? created.apply(this, xtag.toArray(arguments)) : null;
       };
       
-      var proto = doc.register(name, {
+      var proto = doc.register(_name, {
         'prototype': 'nodeName' in tag.prototype ? tag.prototype : Object.create((win.HTMLSpanElement || win.HTMLElement).prototype, tag.prototype),
         'lifecycle':  tag.lifecycle
       });
-
+      
       return proto;
     },
 
   /*** Exposed Variables ***/
     mixins: {},
     prefix: prefix,
+    attributeSetters: {},
     captureEvents: ['focus', 'blur'],
     customEvents: {
       overflow: createFlowEvent('over'),
@@ -462,8 +489,7 @@ if (!(document.register || {}).__polyfill__){
       delegate: {
         action: function (pseudo, event) {
           var target = xtag.query(this, pseudo.value).filter(function (node) {
-          return node == event.target ||
-            node.contains ? node.contains(event.target) : false;
+            return node == event.target || node.contains ? node.contains(event.target) : false;
           })[0];
           return target ? pseudo.listener = pseudo.listener.bind(target) : false;
         }
@@ -474,6 +500,10 @@ if (!(document.register || {}).__polyfill__){
         }
       },
       attribute: {
+        onAdd: function(pseudo){
+          var key = (pseudo.value || pseudo.key.split(':')[0]).toLowerCase();
+          xtag.attributeSetters[this.nodeName.toLowerCase()][key] = pseudo.key.split(':')[0];
+        },
         action: function (pseudo, value) {
           this.setAttribute(pseudo.value || pseudo.key.split(':')[0], value, true);
         }
@@ -510,7 +540,6 @@ if (!(document.register || {}).__polyfill__){
       });
     },
 
-    // DOM
     matchSelector: function (element, selector) {
       return matchSelector.call(element, selector);
     },
@@ -559,7 +588,7 @@ if (!(document.register || {}).__polyfill__){
         attr = '#' + guid + ' > ';
       selector = attr + (selector + '').replace(',', ',' + attr, 'g');
       var result = element.parentNode.querySelectorAll(selector);
-      if (!id) element.id = null;
+      if (!id) element.removeAttribute('id');
       return xtag.toArray(result);
     },
 
@@ -577,7 +606,7 @@ if (!(document.register || {}).__polyfill__){
 
   /*** Pseudos ***/
 
-    applyPseudos: function (key, fn) {
+    applyPseudos: function(key, fn, element) {
       var listener = fn;
       if (key.match(':')) {
         var split = key.match(/(\w+(?:\([^\)]+\))?)/g),
@@ -585,6 +614,9 @@ if (!(document.register || {}).__polyfill__){
         while (--i) {
           split[i].replace(/(\w*)(?:\(([^\)]*)\))?/, function (match, name, value) {
             var pseudo = xtag.pseudos[name];
+                pseudo.key = key;
+                pseudo.name = name;
+                pseudo.value = value;
             if (!pseudo) throw "pseudo not found: " + name;
             var last = listener;
             listener = function(){
@@ -598,6 +630,9 @@ if (!(document.register || {}).__polyfill__){
               if (pseudo.action.apply(this, [obj].concat(args)) === false) return false;
               return obj.listener.apply(this, args);
             };
+            if (element && pseudo.onAdd) {
+              element.getAttribute ? pseudo.onAdd.call(element, pseudo) : element.push(pseudo);
+            }
           });
         }
       }
@@ -606,19 +641,21 @@ if (!(document.register || {}).__polyfill__){
 
   /*** Events ***/
 
-    parseEvent: function (type, fn) {
+    parseEvent: function(type, fn) {
       var pseudos = type.split(':'),
+        noop = function(){},
         key = pseudos.shift(),
         event = xtag.merge({
           base: key,
           pseudos: '',
-          onAdd: function(){},
-          onRemove: function(){},
-          condition: function(){}
+          _pseudos: [],
+          onAdd: noop,
+          onRemove: noop,
+          condition: noop
         }, xtag.customEvents[key] || {});
       event.type = key + (event.pseudos.length ? ':' + event.pseudos : '') + (pseudos.length ? ':' + pseudos.join(':') : '');
       if (fn) {
-        var chained = xtag.applyPseudos(event.type, fn);
+        var chained = xtag.applyPseudos(event.type, fn, event._pseudos);
         event.listener = function(){
           var args = xtag.toArray(arguments);
           if (event.condition.apply(this, [event].concat(args)) === false) return false;
@@ -629,7 +666,10 @@ if (!(document.register || {}).__polyfill__){
     },
 
     addEvent: function (element, type, fn) {
-      var event = typeof fn == 'function' ? xtag.parseEvent(type, fn) : fn;
+      var event = (typeof fn == 'function') ? xtag.parseEvent(type, fn) : fn;
+      event._pseudos.forEach(function(obj){
+        obj.onAdd.call(element, obj);
+      });
       event.onAdd.call(element, event, event.listener);
       xtag.toArray(event.base).forEach(function (name) {
         element.addEventListener(name, event.listener, xtag.captureEvents.indexOf(name) > -1);
