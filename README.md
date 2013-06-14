@@ -9,9 +9,9 @@ $ npm install
 
 $ bower install
 
-$ node demo.js   
+$ grunt connect:demo
 
-// Navigate to localhost:3000/demo/demo.html
+// Navigate to localhost:3001/demo/index.html
 
 ```
 
@@ -28,7 +28,7 @@ $ node demo.js
 ```
 	var panel = document.createElement('x-panel');
 	// panel will get the content as soon as the src property is set
-	panel.src = "page2.html";  
+	panel.src = "page2.html";
 
 ```
 
