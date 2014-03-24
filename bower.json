@@ -1,9 +1,8 @@
 {
-  "name": "x-panel",
+  "name": "Panel",
   "description": "A panel is a block element that has the ability to load data asynchronously when a src attribute is set (same-origin policy restricted).",
   "version": "0.2.0",
   "keywords": [
-    "web-components",
     "panel",
     "xhr",
     "structural",
